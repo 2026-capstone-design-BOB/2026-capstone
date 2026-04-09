@@ -43,7 +43,13 @@ class PluizController:
         target = intent_data.get("target")
 
         # 인텐트 처리 범위를 조금 더 유연하게 확장
-        if intent in ["system", "apps", "open", "close_window"]:
+        executable_actions = ["open", "close", "maximize", "minimize", "restore", "launch"]
+        
+        # LLM이 가끔 '이전 크기'를 'resize'나 'normal'로 뱉을 수 있으므로 전처리
+        if action in ["크기 줄여줘", "작게 해줘", "이전 크기", "normal"]:
+            action = "restore"
+
+        if action in executable_actions:
             success = self.os_handler.execute(
                 action=action,
                 target=target,
