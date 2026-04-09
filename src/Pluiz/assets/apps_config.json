@@ -1,0 +1,12 @@
+{
+    "system_apps": {
+        "메모장": "notepad.exe",
+        "계산기": "calc.exe",
+        "그림판": "mspaint.exe",
+        "명령프롬프트": "cmd.exe"
+    },
+    "web_apps": {
+        "유튜브": "https://www.youtube.com",
+        "네이버": "https://www.naver.com"
+    }
+}
