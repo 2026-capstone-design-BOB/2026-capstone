@@ -3,23 +3,69 @@
     {
       "name": "메모장",
       "path": "notepad.exe",
-      "aliases": ["notepad", "텍스트 에디터", "내모장", "모장"]
+      "aliases": ["notepad", "텍스트 에디터", "내모장", "모장"],
+      "window_keywords": ["메모장", "notepad"]
     },
     {
       "name": "계산기",
       "path": "calc.exe",
-      "aliases": ["calculator", "계산"]
+      "aliases": ["calculator", "계산"],
+      "window_keywords": ["계산기", "calculator", "calc"]
     },
     {
       "name": "그림판",
       "path": "mspaint.exe",
-      "aliases": ["paint", "pbrush"]
+      "aliases": ["paint", "pbrush"],
+      "window_keywords": ["그림판", "paint"]
     },
     {
       "name": "브라우저",
       "path": "chrome.exe",
-      "aliases": ["크롬", "인터넷", "구글"]
+      "aliases": ["크롬", "인터넷", "구글"],
+      "window_keywords": ["Chrome", "크롬", "브라우저"]
     }
-  ]
+  ],
+  "tts": {
+    "enabled": true,
+    "engine": "pyttsx3",
+    "rate": 185,
+    "volume": 1.0,
+    "speak_on_success": false,
+    "messages": {
+      "stt_unclear": "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.",
+      "need_target": "어떤 프로그램을 제어할지 다시 말씀해 주세요.",
+      "deny_unsafe": "이 요청은 보안상 실행할 수 없어요.",
+      "action_failed": "요청한 작업을 수행하지 못했어요.",
+      "app_not_found": "해당 프로그램을 찾지 못했어요.",
+      "window_not_found": "대상 창을 찾지 못했어요.",
+      "action_done": "작업을 완료했어요."
+    }
+  },
+  "security": {
+    "blocked_keywords": [
+      "system32",
+      "regedit",
+      "레지스트리",
+      "포맷",
+      "삭제해",
+      "지워",
+      "제거해",
+      "taskkill",
+      "shutdown",
+      "재부팅",
+      "방화벽 꺼",
+      "백신 꺼",
+      "비밀번호",
+      "계정 삭제",
+      "powershell",
+      "cmd /c",
+      "del /f",
+      "remove-item"
+    ],
+    "blocked_apps": [
+      "cmd.exe",
+      "powershell.exe",
+      "regedit.exe"
+    ]
+  }
 }
-
