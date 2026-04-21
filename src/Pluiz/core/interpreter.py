@@ -10,79 +10,99 @@ class IntentInterpreter:
     def __init__(self):
         self.logger = get_logger("IntentInterpreter")
         self.model_name = config.LLM_MODEL_NAME
-        self.config_path = os.path.join("assets", "apps_config.json")
-        self.apps_data = self._load_apps_config()
+        
+        # OS 및 Web 설정 경로
+        self.apps_config_path = os.path.join("assets", "apps_config.json")
+        self.webs_config_path = os.path.join("assets", "webs_config.json")
 
-    def _load_apps_config(self):
+    def _load_config_names(self, path):
+        """설정 파일에서 이름들을 가져옵니다."""
         try:
-            if not os.path.exists(self.config_path): return []
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                return json.load(f).get("apps", [])
+            if not os.path.exists(path): return []
+            with open(path, "r", encoding="utf-8") as f:
+                apps = json.load(f).get("apps", [])
+                return [app['name'] for app in apps]
         except: return []
 
     def _generate_system_prompt(self):
-        # 앱 이름을 리스트업하여 LLM이 딴 이름을 지어내지 못하게 함
-        valid_apps = ", ".join([app['name'] for app in self.apps_data])
+        apps = self._load_config_names(self.apps_config_path)
+        webs = self._load_config_names(self.webs_config_path)
+        valid_targets = ", ".join(apps + webs)
         
         return f"""
-당신은 사용자의 명령에서 핵심 키워드만 추출하는 도구입니다. 
-반드시 다음 JSON 형식으로만 답변하세요.
+당신은 사용자의 명령을 JSON 명령 시퀀스로 변환하는 전문가입니다. 다른 설명 없이 JSON만 출력하세요.
+대상 목록: {valid_targets}
 
-[지원 앱 목록]
-{valid_apps}
+[액션 및 파라미터 규칙]
+1. "open": 앱 실행 또는 사이트 이동
+   - 사용자가 "새로", "또", "하나 더", "새로운" 이라는 표현을 쓰면 반드시 params에 {{ "is_new": true }}를 포함하세요.
+2. "input": 텍스트 입력 (params: {{ "text": "내용" }})
+   - **텍스트 보존 원칙**: 사용자가 입력하라고 한 문구(인용구)를 토씨 하나 틀리지 말고 그대로 추출하세요.
+   - 절대 요약하거나 말을 바꾸지 마세요. (예: '안녕' -> '고가세요' 금지)
+3. "maximize", "minimize", "close": 창 조절 및 종료
 
-[추출 규칙]
-1. target: 반드시 위 목록에 있는 앱 이름 중 하나를 고르세요. 없으면 가장 비슷한 것을 고르세요.
-2. is_new: 사용자가 "새로", "하나 더", "또" 라는 표현을 썼다면 true, 아니면 false.
-3. text: 입력하라는 내용이 있다면 그 내용만 추출하세요. 없으면 null.
-4. action: 앱을 열거나 포커스하는 거라면 "open", 내용을 쓰는 거라면 "input", 닫는 거라면 "close".
+[입력 추출 핵심 규칙]
+- "~라고 써줘", "~ 입력해줘" 앞의 문구를 그대로 가져오세요.
+- 예: "메모장 새로 열고 안녕 써줘" -> 'open'에 is_new: true 추가 후 'input' 생성.
 
-[JSON 구조]
+[응답 형식 예시]
+입력: "메모장 새로 열어줘"
+출력:
 {{
-  "target": "앱이름",
-  "action": "open" | "input" | "close",
-  "is_new": boolean,
-  "text": "내용 또는 null"
+  "commands": [
+    {{ "action": "open", "target": "메모장", "params": {{ "is_new": true }} }}
+  ]
 }}
+
+입력: "메모장 열고 이제 오류 없었으면 좋겠다 써줘"
+출력:
+{{
+  "commands": [
+    {{ "action": "open", "target": "메모장", "params": {{}} }},
+    {{ "action": "input", "target": "메모장", "params": {{ "text": "이제 오류 없었으면 좋겠다" }} }}
+  ]
+}}
+
+[Web 검색 규칙]
+- "X에서 Y 검색해줘" -> {{ "action": "web_search", "target": "X", "params": {{ "query": "Y" }} }}
+- 특정 사이트 없으면 target은 "google"입니다.
 """
 
-    def analyze(self, user_text, history=None):
+    def analyze(self, user_text):
+        """이 메서드가 반드시 IntentInterpreter 클래스 안에 있어야 합니다!"""
         system_prompt = self._generate_system_prompt()
-        messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': user_text}]
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_text}
+        ]
 
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             content = response['message']['content']
+            
+            # JSON만 추출하는 견고한 정규식
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
-                # LLM이 준 단순 데이터를 시스템용 명령 시퀀스로 변환하는 로직을 코드에서 처리
                 raw_data = json.loads(json_match.group(0))
+                # ❗ 중요: 이제 _build_commands가 리스트를 그대로 반환합니다.
                 return self._build_commands(raw_data)
+            
+            self.logger.warning("응답에서 JSON을 찾을 수 없습니다.")
             return None
         except Exception as e:
             self.logger.error(f"Analysis Error: {e}")
             return None
 
     def _build_commands(self, raw_data):
-        """LLM의 단순 추출 데이터를 엄격한 실행 명령으로 변환 (Rule-base)"""
-        commands = []
-        target = raw_data.get("target", "메모장")
+        """LLM이 생성한 commands 리스트를 검증하고 반환합니다."""
+        commands = raw_data.get("commands", [])
         
-        # 1. 무조건 실행/포커스 명령을 첫 번째로 생성 (기본 규칙)
-        commands.append({
-            "intent": "system",
-            "action": "open",
-            "target": target,
-            "params": {"force_new": raw_data.get("is_new", False)}
-        })
-
-        # 2. 텍스트가 있다면 입력 명령 추가
-        if raw_data.get("text"):
-            commands.append({
-                "intent": "system",
-                "action": "input",
-                "target": target,
-                "params": {"text": raw_data.get("text")}
-            })
-            
-        return {"is_complex": len(commands) > 1, "commands": commands}
+        # 하드코딩된 'open' 로직을 제거하고 LLM의 결정을 존중합니다.
+        for cmd in commands:
+            if "params" not in cmd:
+                cmd["params"] = {}
+        
+        return {
+            "is_complex": len(commands) > 1,
+            "commands": commands
+        }

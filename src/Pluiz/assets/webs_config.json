@@ -1,0 +1,22 @@
+{
+  "apps": [
+    {
+      "name": "네이버",
+      "path": "https://www.naver.com",
+      "search_url": "https://search.naver.com/search.naver?query={query}",
+      "aliases": ["naver", "네이버검색"]
+    },
+    {
+      "name": "유튜브",
+      "path": "https://www.youtube.com",
+      "search_url": "https://www.youtube.com/results?search_query={query}",
+      "aliases": ["youtube", "너튜브"]
+    },
+    {
+      "name": "구글",
+      "path": "https://www.google.com",
+      "search_url": "https://www.google.com/search?q={query}",
+      "aliases": ["google"]
+    }
+  ]
+}
