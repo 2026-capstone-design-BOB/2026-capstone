@@ -5,88 +5,61 @@ import re
 import config
 from utils.logger import get_logger
 
-try:
-    import pyttsx3
-except ImportError:
-    pyttsx3 = None
-
 
 class IntentInterpreter:
     def __init__(self):
         self.logger = get_logger("IntentInterpreter")
         self.model_name = config.LLM_MODEL_NAME
-        self.config_path = os.path.join("assets", "apps_config.json")
 
-        self.raw_config = self._load_raw_config()
-        self.apps_data = self.raw_config.get("apps", [])
-        self.tts_config = self.raw_config.get("tts", {})
-        self.security_config = self.raw_config.get("security", {})
+        self.apps_config_path = os.path.join("assets", "apps_config.json")
+        self.webs_config_path = os.path.join("assets", "webs_config.json")
+
+        self.apps_raw = self._load_raw_config(self.apps_config_path)
+        self.webs_raw = self._load_raw_config(self.webs_config_path)
+
+        self.apps_data = self.apps_raw.get("apps", [])
+        self.webs_data = self.webs_raw.get("apps", [])
+
+        self.tts_config = self.apps_raw.get("tts", {})
+        self.security_config = self.apps_raw.get("security", {})
 
         self._alias_to_name = self._build_alias_map()
 
-    def _load_raw_config(self):
+    def _load_raw_config(self, path):
         try:
-            if not os.path.exists(self.config_path):
+            if not os.path.exists(path):
                 return {}
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            self.logger.error(f"Config Load Error: {e}")
+            self.logger.error(f"Config Load Error ({path}): {e}")
             return {}
 
     def _build_alias_map(self):
         alias_map = {}
+
         for app in self.apps_data:
             name = app.get("name", "").strip()
             if not name:
                 continue
             alias_map[name.lower()] = name
             for alias in app.get("aliases", []):
-                alias_map[str(alias).lower()] = name
+                alias_map[str(alias).strip().lower()] = name
+
+        for web in self.webs_data:
+            name = web.get("name", "").strip()
+            if not name:
+                continue
+            alias_map[name.lower()] = name
+            for alias in web.get("aliases", []):
+                alias_map[str(alias).strip().lower()] = name
+
         return alias_map
-
-    def _init_tts(self):
-        if not self.tts_config.get("enabled", False):
-            return None
-        if pyttsx3 is None:
-            self.logger.warning("pyttsx3 is not installed. TTS disabled.")
-            return None
-
-        if self._tts_engine is None:
-            try:
-                self._tts_engine = pyttsx3.init()
-                self._tts_engine.setProperty("rate", self.tts_config.get("rate", 185))
-                self._tts_engine.setProperty("volume", self.tts_config.get("volume", 1.0))
-            except Exception as e:
-                self.logger.error(f"TTS Init Error: {e}")
-                self._tts_engine = None
-        return self._tts_engine
-
-    def _speak(self, text):
-        if not text or not self.tts_config.get("enabled", False):
-            return
-
-        if pyttsx3 is None:
-            self.logger.warning("pyttsx3 is not installed. TTS disabled.")
-            return
-
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", self.tts_config.get("rate", 185))
-            engine.setProperty("volume", self.tts_config.get("volume", 1.0))
-            engine.say(text)
-            engine.runAndWait()
-            engine.stop()
-        except Exception as e:
-            self.logger.error(f"TTS Speak Error: {e}")
 
     def _message(self, key, default_text):
         return self.tts_config.get("messages", {}).get(key, default_text)
 
-    def _respond(self, status, message, commands=None, speak=False, extra=None):
-        if speak:
-            self._speak(message)
-
+    def _respond(self, status, message, commands=None, extra=None):
         result = {
             "status": status,
             "message": message,
@@ -98,41 +71,70 @@ class IntentInterpreter:
         return result
 
     def _generate_system_prompt(self):
-        valid_apps = ", ".join([app["name"] for app in self.apps_data])
+        apps = [app.get("name", "") for app in self.apps_data if app.get("name")]
+        webs = [web.get("name", "") for web in self.webs_data if web.get("name")]
+        valid_targets = ", ".join(apps + webs)
 
         alias_guide = []
-        for app in self.apps_data:
-            aliases = ", ".join(app.get("aliases", []))
-            alias_guide.append(f'- {app["name"]}: {aliases if aliases else "별칭 없음"}')
+        for item in self.apps_data + self.webs_data:
+            name = item.get("name", "")
+            aliases = ", ".join(item.get("aliases", []))
+            alias_guide.append(f'- {name}: {aliases if aliases else "별칭 없음"}')
         alias_text = "\n".join(alias_guide)
 
         return f"""
-당신은 사용자의 명령에서 핵심 키워드만 추출하는 도구입니다.
-반드시 JSON 형식으로만 답변하세요.
+당신은 사용자의 명령을 JSON 명령 시퀀스로 변환하는 전문가입니다.
+반드시 다른 설명 없이 JSON만 출력하세요.
 
-[지원 앱 목록]
-{valid_apps}
+[대상 목록]
+{valid_targets}
 
-[앱 별칭 참고]
+[대상 별칭 참고]
 {alias_text}
 
-[추출 규칙]
-1. target: 반드시 위 목록에 있는 앱 이름 중 하나를 고르세요.
-2. 사용자가 별칭(예: 크롬, 내모장, 계산)을 말하면 반드시 정식 앱 이름으로 변환하세요.
-3. 앱이 전혀 명시되지 않았고 문맥상 추정이 어렵다면 target은 null 로 두세요.
-4. is_new: 사용자가 "새로", "하나 더", "또" 라는 표현을 썼다면 true, 아니면 false.
-5. text: 입력하라는 내용이 있다면 그 내용만 추출하세요. 없으면 null.
-6. action:
-   - 앱을 열거나 포커스하는 거라면 "open"
-   - 내용을 쓰는 거라면 "input"
-   - 닫는 거라면 "close"
+[액션 및 파라미터 규칙]
+1. "open": 앱 실행 또는 사이트 열기
+   - 사용자가 "새로", "또", "하나 더", "새로운" 이라는 표현을 쓰면 반드시 params에 {{ "is_new": true }}를 포함하세요.
+2. "input": 텍스트 입력
+   - params 형식: {{ "text": "내용" }}
+   - 사용자가 입력하라고 한 문구를 절대 바꾸지 말고 그대로 넣으세요.
+3. "close": 앱/탭/창 닫기
+4. "maximize", "minimize", "restore": 창 제어
+5. "web_search": 웹 검색
+   - 형식: {{ "action": "web_search", "target": "사이트이름", "params": {{ "query": "검색어" }} }}
 
-[JSON 구조]
+[중요 규칙]
+1. target은 반드시 대상 목록 중 하나의 정식 이름으로 넣으세요.
+2. 사용자가 별칭으로 말하면 반드시 정식 이름으로 변환하세요.
+3. 앱/웹 대상이 불명확하면 target은 null로 두세요.
+4. 입력 명령과 열기 명령이 함께 있으면 commands 배열에 순서대로 모두 넣으세요.
+5. "~에서 ~ 검색해줘" 형태는 web_search를 우선 사용하세요.
+6. 특정 검색 사이트가 없으면 target은 "google"로 하세요.
+
+[응답 형식 예시]
+입력: "메모장 새로 열어줘"
+출력:
 {{
-  "target": "앱이름 또는 null",
-  "action": "open" | "input" | "close",
-  "is_new": boolean,
-  "text": "내용 또는 null"
+  "commands": [
+    {{ "action": "open", "target": "메모장", "params": {{ "is_new": true }} }}
+  ]
+}}
+
+입력: "메모장 열고 안녕이라고 써줘"
+출력:
+{{
+  "commands": [
+    {{ "action": "open", "target": "메모장", "params": {{}} }},
+    {{ "action": "input", "target": "메모장", "params": {{ "text": "안녕" }} }}
+  ]
+}}
+
+입력: "유튜브에서 아이유 검색해줘"
+출력:
+{{
+  "commands": [
+    {{ "action": "web_search", "target": "유튜브", "params": {{ "query": "아이유" }} }}
+  ]
 }}
 """
 
@@ -145,16 +147,23 @@ class IntentInterpreter:
             return True
 
         vague_patterns = [
-            r"^어+$", r"^음+$", r"^아+$", r"^저기+$", r"^그거+$", r"^이거+$"
+            r"^어+$",
+            r"^음+$",
+            r"^아+$",
+            r"^저기+$",
+            r"^그거+$",
+            r"^이거+$"
         ]
         return any(re.match(p, cleaned) for p in vague_patterns)
 
     def _is_unsafe_request(self, user_text):
         lowered = (user_text or "").lower()
         blocked_keywords = self.security_config.get("blocked_keywords", [])
+
         for keyword in blocked_keywords:
             if str(keyword).lower() in lowered:
                 return True, keyword
+
         return False, None
 
     def _normalize_target(self, target, user_text=""):
@@ -174,7 +183,7 @@ class IntentInterpreter:
         # 1) STT 불명확 → 즉시 재질문
         if self._is_unclear_text(user_text):
             msg = self._message("stt_unclear", "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.")
-            return self._respond("clarify", msg, commands=[], speak=True)
+            return self._respond("clarify", msg, commands=[])
 
         # 2) 위험 요청 1차 차단
         unsafe, matched_keyword = self._is_unsafe_request(user_text)
@@ -185,7 +194,6 @@ class IntentInterpreter:
                 "denied",
                 msg,
                 commands=[],
-                speak=True,
                 extra={"blocked_keyword": matched_keyword}
             )
 
@@ -198,69 +206,55 @@ class IntentInterpreter:
         try:
             response = ollama.chat(model=self.model_name, messages=messages)
             content = response["message"]["content"]
-            json_match = re.search(r"\{.*\}", content, re.DOTALL)
 
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if not json_match:
+                self.logger.warning("응답에서 JSON을 찾을 수 없습니다.")
                 msg = self._message("stt_unclear", "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.")
-                return self._respond("clarify", msg, commands=[], speak=True)
+                return self._respond("clarify", msg, commands=[])
 
             raw_data = json.loads(json_match.group(0))
-
-            normalized_target = self._normalize_target(raw_data.get("target"), user_text)
-            raw_data["target"] = normalized_target
-
-            if not raw_data.get("target"):
-                msg = self._message("need_target", "어떤 프로그램을 제어할지 다시 말씀해 주세요.")
-                return self._respond("clarify", msg, commands=[], speak=True)
-
-            return self._build_commands(raw_data)
+            return self._build_commands(raw_data, user_text)
 
         except Exception as e:
             self.logger.error(f"Analysis Error: {e}")
             msg = self._message("stt_unclear", "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.")
-            return self._respond("clarify", msg, commands=[], speak=True)
+            return self._respond("clarify", msg, commands=[])
 
-    def _build_commands(self, raw_data):
-        commands = []
-        target = raw_data.get("target")
-        action = raw_data.get("action", "open")
-        is_new = raw_data.get("is_new", False)
-        text = raw_data.get("text")
+    def _build_commands(self, raw_data, user_text=""):
+        commands = raw_data.get("commands", [])
 
-        # close 는 open 없이 바로 닫기
-        if action == "close":
-            commands.append({
+        if not isinstance(commands, list):
+            msg = self._message("stt_unclear", "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.")
+            return self._respond("clarify", msg, commands=[])
+
+        normalized_commands = []
+
+        for cmd in commands:
+            action = cmd.get("action")
+            target = self._normalize_target(cmd.get("target"), user_text)
+            params = cmd.get("params", {})
+
+            if params is None or not isinstance(params, dict):
+                params = {}
+
+            if not target:
+                msg = self._message("need_target", "어떤 프로그램이나 웹을 제어할지 다시 말씀해 주세요.")
+                return self._respond("clarify", msg, commands=[])
+
+            normalized_commands.append({
                 "intent": "system",
-                "action": "close",
+                "action": action,
                 "target": target,
-                "params": {}
-            })
-            return {
-                "status": "ok",
-                "message": "닫기 명령을 준비했어요.",
-                "is_complex": False,
-                "commands": commands
-            }
-
-        # open / input 계열은 우선 창 확보
-        commands.append({
-            "intent": "system",
-            "action": "open",
-            "target": target,
-            "params": {"force_new": is_new}
-        })
-
-        if action == "input" and text:
-            commands.append({
-                "intent": "system",
-                "action": "input",
-                "target": target,
-                "params": {"text": text}
+                "params": params
             })
 
-        return {
-            "status": "ok",
-            "message": "명령 해석을 완료했어요.",
-            "is_complex": len(commands) > 1,
-            "commands": commands
-        }
+        if not normalized_commands:
+            msg = self._message("stt_unclear", "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요.")
+            return self._respond("clarify", msg, commands=[])
+
+        return self._respond(
+            "ok",
+            "명령 해석을 완료했어요.",
+            commands=normalized_commands
+        )

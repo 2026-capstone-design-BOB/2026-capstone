@@ -9,17 +9,15 @@ import win32gui
 import win32con
 from fuzzywuzzy import process
 from engine.base import BaseController
-
-try:
-    import pyttsx3
-except ImportError:
-    pyttsx3 = None
+from utils.logger import get_logger, trace_action
 
 
 class OSHandler(BaseController):
     def __init__(self):
         super().__init__()
+        self.logger = get_logger("OSHandler")
         self.config_path = os.path.join("assets", "apps_config.json")
+
         self.raw_config = self._load_raw_config()
         self.apps_data = self.raw_config.get("apps", [])
         self.tts_config = self.raw_config.get("tts", {})
@@ -27,7 +25,7 @@ class OSHandler(BaseController):
 
         self.search_targets = self._prepare_search_targets()
         self.last_used_hwnd = None
-        
+
     def _load_raw_config(self):
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
@@ -44,55 +42,16 @@ class OSHandler(BaseController):
                 targets[alias] = app
         return targets
 
-    def _init_tts(self):
-        if not self.tts_config.get("enabled", False):
-            return None
-        if pyttsx3 is None:
-            self.logger.warning("pyttsx3 is not installed. TTS disabled.")
-            return None
-
-        if self._tts_engine is None:
-            try:
-                self._tts_engine = pyttsx3.init()
-                self._tts_engine.setProperty("rate", self.tts_config.get("rate", 185))
-                self._tts_engine.setProperty("volume", self.tts_config.get("volume", 1.0))
-            except Exception as e:
-                self.logger.error(f"TTS Init Error: {e}")
-                self._tts_engine = None
-        return self._tts_engine
-
-    def _speak(self, text):
-        if not text or not self.tts_config.get("enabled", False):
-            return
-
-        if pyttsx3 is None:
-            self.logger.warning("pyttsx3 is not installed. TTS disabled.")
-            return
-
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", self.tts_config.get("rate", 185))
-            engine.setProperty("volume", self.tts_config.get("volume", 1.0))
-            engine.say(text)
-            engine.runAndWait()
-            engine.stop()
-        except Exception as e:
-            self.logger.error(f"TTS Speak Error: {e}")
-
     def _message(self, key, default_text):
         return self.tts_config.get("messages", {}).get(key, default_text)
 
-    def _respond(self, status, reason=None, message=None, speak=False, **kwargs):
+    def _respond(self, status, reason=None, message=None, **kwargs):
         result = {"status": status}
         if reason:
             result["reason"] = reason
         if message:
             result["message"] = message
         result.update(kwargs)
-
-        if speak and message:
-            self._speak(message)
-
         return result
 
     def _get_window_keywords(self, app_info):
@@ -152,84 +111,85 @@ class OSHandler(BaseController):
 
     def execute(self, action: str, target: str, params: dict = None):
         params = params or {}
+        self.logger.info(f"🚀 [OS_START] 액션: {action} | 타겟: {target} | 데이터: {params}")
 
         # 1. 앱 정보 매칭
         app_info, score = self._get_best_match(target)
         if not app_info:
             msg = self._message("app_not_found", "해당 프로그램을 찾지 못했어요.")
-            return self._respond("fail", reason="not_found", message=msg, speak=True, score=score)
+            return self._respond("fail", reason="not_found", message=msg, score=score)
 
-        # 2. 보안상 2차 차단
+        # 2. 보안 차단
         is_blocked, blocked_reason = self._is_blocked_request(action, target, app_info, params)
         if is_blocked:
             self.logger.warning(f"Blocked by OSHandler: {blocked_reason}")
             msg = self._message("deny_unsafe", "이 요청은 보안상 실행할 수 없어요.")
-            return self._respond("denied", reason=blocked_reason, message=msg, speak=True)
+            return self._respond("denied", reason=blocked_reason, message=msg)
 
         actual_name = app_info["name"]
         path = app_info["path"]
+        current_hwnds = self._get_all_hwnds(app_info)
 
         # 3. 액션 처리
         if action == "open":
-            force_new = params.get("force_new", False)
+            is_new = params.get("is_new", False) or params.get("force_new", False)
 
-            old_hwnds = self._get_all_hwnds(app_info)
-
-            if not force_new and old_hwnds:
-                self.logger.info(f"기존 '{actual_name}' 창을 사용합니다.")
-                self.last_used_hwnd = old_hwnds[-1]
+            # 이미 창이 있고 새로 여는 요청이 아니면 해당 창으로 포커스
+            if not is_new and current_hwnds:
+                self.last_used_hwnd = current_hwnds[-1]
                 self._force_focus(self.last_used_hwnd)
 
                 msg = f"{actual_name} 창으로 이동했어요."
-                speak_success = self.tts_config.get("speak_on_success", False)
                 return self._respond(
                     "success",
                     reason="focus",
                     message=msg,
-                    speak=speak_success,
                     mode="focus",
                     hwnd=self.last_used_hwnd
                 )
 
-            self.logger.info(f"'{actual_name}' 새 인스턴스 실행 중...")
+            # 새 실행
+            old_hwnds = current_hwnds
             try:
                 subprocess.Popen(f'start "" "{path}"', shell=True)
             except Exception as e:
                 self.logger.error(f"Launch Error: {e}")
                 msg = self._message("action_failed", "요청한 작업을 수행하지 못했어요.")
-                return self._respond("fail", reason="launch_error", message=msg, speak=True)
+                return self._respond("fail", reason="launch_error", message=msg)
 
             new_hwnd = None
+            updated_hwnds = old_hwnds[:]
+
             for _ in range(10):
                 time.sleep(0.5)
-                current_hwnds = self._get_all_hwnds(app_info)
-                diff = [h for h in current_hwnds if h not in old_hwnds]
+                updated_hwnds = self._get_all_hwnds(app_info)
+                diff = [h for h in updated_hwnds if h not in old_hwnds]
                 if diff:
                     new_hwnd = diff[0]
                     break
-                elif not old_hwnds and current_hwnds:
-                    new_hwnd = current_hwnds[0]
+                elif not old_hwnds and updated_hwnds:
+                    new_hwnd = updated_hwnds[0]
                     break
 
-            fallback_hwnds = self._get_all_hwnds(app_info)
-            self.last_used_hwnd = new_hwnd or (fallback_hwnds[-1] if fallback_hwnds else None)
+            self.last_used_hwnd = new_hwnd or (updated_hwnds[-1] if updated_hwnds else None)
 
             if not self.last_used_hwnd:
                 msg = self._message("window_not_found", "대상 창을 찾지 못했어요.")
-                return self._respond("fail", reason="window_not_found", message=msg, speak=True)
+                return self._respond("fail", reason="window_not_found", message=msg)
 
             msg = f"{actual_name} 실행을 완료했어요."
-            speak_success = self.tts_config.get("speak_on_success", False)
             return self._respond(
                 "success",
                 reason="launch",
                 message=msg,
-                speak=speak_success,
                 mode="launch",
                 hwnd=self.last_used_hwnd
             )
 
         elif action == "input":
+            input_text = params.get("text", "")
+            send_enter = params.get("send_enter", True)
+
             target_hwnd = self.last_used_hwnd
             win = self._find_window_by_hwnd(target_hwnd) if target_hwnd else None
 
@@ -238,34 +198,71 @@ class OSHandler(BaseController):
                 if all_hwnds:
                     target_hwnd = all_hwnds[-1]
                     win = self._find_window_by_hwnd(target_hwnd)
+                    self.last_used_hwnd = target_hwnd
 
             if win:
                 try:
                     self.logger.info(f"대상 창(HWND: {target_hwnd})에 텍스트를 입력합니다.")
                     self._force_focus(win._hWnd)
-                    time.sleep(0.8)
+                    time.sleep(1.0)
 
-                    text_to_input = params.get("text", "")
-                    pyperclip.copy(text_to_input)
-                    pyautogui.hotkey("ctrl", "v")
-                    pyautogui.press("enter")
+                    pyperclip.copy("")
+                    pyperclip.copy(input_text)
+                    time.sleep(0.2)
+
+                    pyautogui.keyDown("ctrl")
+                    pyautogui.press("v")
+                    time.sleep(0.1)
+                    pyautogui.keyUp("ctrl")
+
+                    if send_enter:
+                        time.sleep(0.1)
+                        pyautogui.press("enter")
 
                     msg = self._message("action_done", "작업을 완료했어요.")
-                    speak_success = self.tts_config.get("speak_on_success", False)
-                    return self._respond("success", message=msg, speak=speak_success)
+                    return self._respond("success", message=msg)
+
                 except Exception as e:
                     self.logger.error(f"Input Error: {e}")
                     msg = self._message("action_failed", "요청한 작업을 수행하지 못했어요.")
-                    return self._respond("fail", reason="input_error", message=msg, speak=True)
-            else:
+                    return self._respond("fail", reason="input_error", message=msg)
+
+            msg = self._message("window_not_found", "대상 창을 찾지 못했어요.")
+            return self._respond("fail", reason="window_not_found", message=msg)
+
+        elif action in ["maximize", "minimize", "restore"]:
+            target_hwnd = None
+
+            if self.last_used_hwnd and win32gui.IsWindow(self.last_used_hwnd):
+                target_hwnd = self.last_used_hwnd
+            elif current_hwnds:
+                target_hwnd = current_hwnds[-1]
+
+            if not target_hwnd:
                 msg = self._message("window_not_found", "대상 창을 찾지 못했어요.")
-                return self._respond("fail", reason="window_not_found", message=msg, speak=True)
+                return self._respond("fail", reason="window_not_found", message=msg)
+
+            try:
+                if action == "maximize":
+                    win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
+                elif action == "minimize":
+                    win32gui.ShowWindow(target_hwnd, win32con.SW_MINIMIZE)
+                elif action == "restore":
+                    win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
+
+                self._force_focus(target_hwnd)
+                return self._respond("success", mode=action, message=f"{actual_name} 창을 {action} 했어요.")
+
+            except Exception as e:
+                self.logger.error(f"Window Control Error: {e}")
+                msg = self._message("action_failed", "요청한 작업을 수행하지 못했어요.")
+                return self._respond("fail", reason="window_control_error", message=msg)
 
         elif action == "close":
             hwnds = self._get_all_hwnds(app_info)
             if not hwnds:
                 msg = self._message("window_not_found", "대상 창을 찾지 못했어요.")
-                return self._respond("fail", reason="window_not_found", message=msg, speak=True)
+                return self._respond("fail", reason="window_not_found", message=msg)
 
             closed_count = 0
             for hwnd in hwnds:
@@ -280,19 +277,18 @@ class OSHandler(BaseController):
                     self.last_used_hwnd = None
 
                 msg = f"{actual_name} 창을 닫았어요."
-                speak_success = self.tts_config.get("speak_on_success", False)
                 return self._respond(
                     "success",
                     message=msg,
-                    speak=speak_success,
-                    closed_count=closed_count
+                    closed_count=closed_count,
+                    mode="close"
                 )
 
             msg = self._message("action_failed", "요청한 작업을 수행하지 못했어요.")
-            return self._respond("fail", reason="close_failed", message=msg, speak=True)
+            return self._respond("fail", reason="close_failed", message=msg)
 
         msg = self._message("action_failed", "요청한 작업을 수행하지 못했어요.")
-        return self._respond("fail", reason="unknown_action", message=msg, speak=True)
+        return self._respond("fail", reason="unknown_action", message=msg)
 
     def _get_best_match(self, target):
         choices = list(self.search_targets.keys())
