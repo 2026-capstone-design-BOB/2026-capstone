@@ -6,7 +6,6 @@ from engine.base import BaseController
 from engine.web.browser_manager import BrowserManager
 from utils.logger import get_logger
 
-
 class WebHandler(BaseController):
     def __init__(self):
         super().__init__()
@@ -36,19 +35,9 @@ class WebHandler(BaseController):
 
     def _get_best_match(self, target):
         choices = list(self.search_targets.keys())
-        if not choices or not target:
-            return None, 0
+        if not choices: return None, 0
         best_match, score = process.extractOne(target, choices)
         return (self.search_targets[best_match], score) if score >= 60 else (None, score)
-
-    def _respond(self, status, reason=None, message=None, **kwargs):
-        result = {"status": status}
-        if reason:
-            result["reason"] = reason
-        if message:
-            result["message"] = message
-        result.update(kwargs)
-        return result
 
     def is_mine(self, target: str):
         _, score = self._get_best_match(target)
@@ -56,184 +45,128 @@ class WebHandler(BaseController):
 
     def execute(self, action: str, target: str, params: dict = None):
         params = params or {}
-        self.logger.info(f"🌐 [WEB_START] 액션: {action} | 타겟: {target} | 데이터: {params}")
-
-        web_info, score = self._get_best_match(target)
-
-        # 기본 URL 설정
+        web_info, _ = self._get_best_match(target)
         url = web_info["path"] if web_info else params.get("url")
+        
+        # [핵심] 컨트롤러에서 넘어온 '새 창 의도' 확인
+        force_new = params.get("force_new", False)
 
-        # --- [1. 웹 닫기] ---
-        if action in ["close", "web_close"]:
-            driver = self.browser_mgr.get_driver()
-            if not driver:
-                return self._respond(
-                    "fail",
-                    reason="no_active_driver",
-                    message="현재 열려 있는 브라우저가 없어요."
-                )
-
-            handles = driver.window_handles
-
-            if len(handles) <= 1:
-                self.browser_mgr.quit()
-                return self._respond(
-                    "success",
-                    mode="all_quit",
-                    message="브라우저를 종료했어요."
-                )
-
-            target_found = False
-            for handle in handles:
-                driver.switch_to.window(handle)
-                current_url = driver.current_url.rstrip("/")
-
-                if url and url.rstrip("/") in current_url:
-                    driver.close()
-                    target_found = True
-                    break
-
-            if not target_found:
-                driver.close()
-
-            remaining_handles = driver.window_handles
-            if remaining_handles:
-                driver.switch_to.window(remaining_handles[-1])
-                return self._respond(
-                    "success",
-                    mode="tab_closed",
-                    message=f"{target} 탭을 닫았어요." if target else "현재 탭을 닫았어요."
-                )
-            else:
-                self.browser_mgr.quit()
-                return self._respond(
-                    "success",
-                    mode="last_tab_quit",
-                    message="마지막 브라우저 탭을 닫았어요."
-                )
-
-        # --- [2. 공통 드라이버 확보] ---
-        driver = self.browser_mgr.get_driver(headless=params.get("headless", False))
-        if not driver:
-            return self._respond(
-                "fail",
-                reason="driver_init_failed",
-                message="브라우저를 시작하지 못했어요."
-            )
+        # 1. 브라우저/페이지 확보 (Playwright 방식)
+        page = self.browser_mgr.get_driver(
+            headless=params.get("headless", False),
+            force_new=force_new
+        )
+        if not page: return {"status": "fail", "reason": "driver_init_failed"}
 
         try:
-            # --- [3. 웹 페이지 열기] ---
-            if action in ["open", "navigate"]:
-                if not url:
-                    return self._respond(
-                        "fail",
-                        reason="no_url",
-                        message="열 웹 주소를 찾지 못했어요."
-                    )
+            # --- [2. 종료 액션] ---
+            if action in ["close", "web_close"]:
+                self.browser_mgr.quit()
+                return {"status": "success", "mode": "all_quit"}
 
-                target_handle = None
-                for handle in driver.window_handles:
-                    driver.switch_to.window(handle)
-                    current_url = driver.current_url.rstrip("/")
-                    if url.rstrip("/") in current_url:
-                        target_handle = handle
-                        break
-
-                if target_handle and not params.get("is_new"):
-                    self.logger.info(f"🌐 이미 {target} 페이지가 열려 있어 해당 탭으로 전환합니다.")
-                    driver.switch_to.window(target_handle)
-                    return self._respond(
-                        "success",
-                        url=driver.current_url,
-                        mode="focus",
-                        message=f"이미 열려 있는 {target} 탭으로 이동했어요."
-                    )
+            # --- [3. 웹 페이지 열기/이동] ---
+            elif action in ["open", "navigate"]:
+                if not url: return {"status": "fail", "reason": "no_url"}
+                
+                # 이미 해당 URL이 열려있는지 확인 (단, force_new가 아닐 때만)
+                if not force_new and url.rstrip('/') in page.url.rstrip('/'):
+                    self.logger.info(f"🌐 이미 {target} 페이지가 열려 있어 재사용합니다.")
                 else:
-                    self.logger.info("🌐 %s 페이지를 새 탭으로 엽니다: %s", target, url)
-                    driver.execute_script(f"window.open('{url}', '_blank');")
-                    driver.switch_to.window(driver.window_handles[-1])
-
-                    return self._respond(
-                        "success",
-                        url=driver.current_url,
-                        mode="open",
-                        message=f"{target} 페이지를 열었어요." if target else "웹페이지를 열었어요."
-                    )
+                    self.logger.info(f"🌐 {target} 이동: {url}")
+                    page.goto(url)
+                return {"status": "success", "url": page.url}
 
             # --- [4. 웹 검색] ---
             elif action == "web_search":
                 query = params.get("query") or params.get("text", "")
-                if not query:
-                    return self._respond(
-                        "fail",
-                        reason="no_query",
-                        message="검색어를 다시 말씀해주세요."
-                    )
+                if not query: return {"status": "fail", "reason": "no_query"}
 
-                if web_info and "search_url" in web_info:
-                    search_pattern = web_info["search_url"]
-                else:
-                    search_pattern = "https://www.google.com/search?q={query}"
+                search_pattern = web_info["search_url"] if web_info and "search_url" in web_info \
+                                 else "https://www.google.com/search?q={query}"
+                
+                full_url = search_pattern.replace("{query}", urllib.parse.quote(query))
+                self.logger.info(f"🌐 검색 실행: {full_url}")
+                page.goto(full_url)
+                return {"status": "success", "search_url": full_url}
 
-                encoded_query = urllib.parse.quote(query)
-                full_url = search_pattern.replace("{query}", encoded_query)
+            # --- [5. 스마트 지도 검색 (매크로 강화 버전)] ---
+            elif action == "map_search":
+                departure = params.get("departure") 
+                destination = params.get("destination")
+                
+                # 목적지가 없으면 즉시 실패 처리 (하드코딩 방지)
+                if not destination: 
+                    self.logger.error("❌ 목적지 데이터가 누락되었습니다.")
+                    return {"status": "fail", "reason": "destination_missing"}
 
-                self.logger.info("🌐 검색 실행 URL: %s", full_url)
-                driver.execute_script(f"window.open('{full_url}', '_blank');")
-                driver.switch_to.window(driver.window_handles[-1])
+                # 출발지가 없으면 보통 '내 위치'를 의미하므로 '현재 위치'라고 명시
+                if not departure:
+                    departure = "현재 위치"
 
-                return self._respond(
-                    "success",
-                    search_url=full_url,
-                    mode="search",
-                    message=f"{query} 검색 결과를 열었어요."
-                )
+                self.logger.info(f"📍 지도 검색 실행: {departure} -> {destination}")
+                
+                # 1. wait_until을 "domcontentloaded"로 바꿉니다. (HTML 뼈대만 나오면 바로 실행)
+                # 2. 혹시 모르니 timeout을 0(무제한)으로 주거나 넉넉히 줍니다.
+                page.goto("https://map.naver.com/p/directions/", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000) # 인터페이스 안정화 대기
 
-            # --- [5. 창 제어] ---
-            elif action in ["maximize", "restore"]:
-                driver.maximize_window()
-                return self._respond(
-                    "success",
-                    mode="maximize",
-                    message="브라우저 창을 최대화했어요."
-                )
+                try:
+                    # 2. 출발지 입력 창 찾기 및 클릭
+                    # 신형 지도는 input_search 클래스를 공통으로 씁니다. nth(0)이 출발지입니다.
+                    origin_input = page.locator(".input_search").nth(0)
+                    origin_input.click()
+                    page.wait_for_timeout(500)
+                    
+                    # 3. 기존 내용 지우고 한글자씩 입력 (네이버 필터링 우회)
+                    page.keyboard.press("Control+A")
+                    page.keyboard.press("Backspace")
+                    page.keyboard.type(departure, delay=100) # 사람처럼 0.1초 간격 타이핑
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(1000)
 
-            elif action == "minimize":
-                driver.minimize_window()
-                return self._respond(
-                    "success",
-                    mode="minimize",
-                    message="브라우저 창을 최소화했어요."
-                )
+                    # 4. 도착지 입력 창 찾기 및 클릭 (nth(1)이 도착지)
+                    dest_input = page.locator(".input_search").nth(1)
+                    dest_input.click()
+                    page.wait_for_timeout(500)
+                    
+                    page.keyboard.type(destination, delay=100)
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(1000)
 
-            # --- [6. 스크롤] ---
+                    # 5. 마지막 확인 사살 (엔터 한 번 더)
+                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(1000) # 버튼 활성화 대기 시간 추가
+
+                    # --- [수정된 클릭 로직] ---
+                    # 클래스명이 중복되므로, '길찾기'라는 텍스트를 가진 버튼을 정확히 타겟팅합니다.
+                    # .filter(has_text="길찾기")를 붙여서 '다시입력' 버튼과 차별화합니다.
+                    search_btn = page.locator("button.btn_direction").filter(has_text="길찾기")
+                    
+                    if search_btn.count() > 0: # 버튼이 존재하는지 확인
+                        self.logger.info("🖱️ '길찾기' 버튼을 정확히 찾아 클릭합니다.")
+                        search_btn.first.click(force=True)
+                    else:
+                        # 최후의 보루: 텍스트로 찾기
+                        self.logger.info("💻 텍스트 기반 버튼 클릭 시도")
+                        page.get_by_role("button", name="길찾기").click(force=True)
+                    # -------------------------
+
+                    self.logger.info("✅ 사람처럼 입력 및 버튼 클릭 완료")
+                except Exception as e:
+                    self.logger.error(f"⚠️ 매크로 실행 중 오류: {e}")
+                    return {"status": "fail", "reason": str(e)}
+
+                return {"status": "success", "mode": "human_mimic_navigation"}
+
+            # --- [6. 기타 제어] ---
             elif action == "web_scroll":
                 direction = params.get("direction", "down")
                 px = 500 if direction == "down" else -500
-                driver.execute_script(f"window.scrollBy(0, {px});")
+                page.evaluate(f"window.scrollBy(0, {px});")
+                return {"status": "success", "mode": "scroll"}
 
-                if direction == "down":
-                    msg = "페이지를 아래로 스크롤했어요."
-                else:
-                    msg = "페이지를 위로 스크롤했어요."
-
-                return self._respond(
-                    "success",
-                    mode="scroll",
-                    direction=direction,
-                    message=msg
-                )
-
-            return self._respond(
-                "fail",
-                reason=f"unknown_web_action:{action}",
-                message="지원하지 않는 웹 명령이에요."
-            )
+            return {"status": "fail", "reason": f"unknown_web_action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"Web Action 실행 중 오류: {e}")
-            return self._respond(
-                "fail",
-                reason=str(e),
-                message="웹 작업을 수행하지 못했어요."
-            )
+            self.logger.error(f"Web Action 실행 오류: {e}")
+            return {"status": "fail", "reason": str(e)}

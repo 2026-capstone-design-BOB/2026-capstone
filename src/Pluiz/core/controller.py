@@ -1,218 +1,158 @@
-# core/controller.py
-
 import json
 import time
+import os
 from core.stt import STTEngine
 from core.interpreter import IntentInterpreter
+from core.security import SecurityManager  # 👈 신규 모듈
 from engine.os_handler import OSHandler
 from engine.web_handler import WebHandler
 from engine.speaker import Speaker
 from utils.logger import get_logger
 
-
 class PluizController:
     def __init__(self):
         self.logger = get_logger("Controller")
+        
+        # 1. 엔진 및 모듈 초기화
         self.stt = STTEngine()
         self.interpreter = IntentInterpreter()
         self.os_handler = OSHandler()
         self.web_handler = WebHandler()
         self.speaker = Speaker()
+        self.security = SecurityManager("assets/tts_security_config.json")
+
+        # 초기화 직후 환영 인사 (필요 시)
+        # self.speaker.speak(self.tts_msgs.get("welcome", "안녕하세요!"))
+        
+        # 2. TTS 멘트 로드 (assets/tts_config.json)
+        self.tts_config_path = "assets/tts_config.json"
+        self.tts_data = self._load_full_config()
+        self.tts_msgs = self.tts_data.get("status_messages", {})
+        self.tts_templates = self.tts_data.get("action_templates", {})
+
+    def _load_full_config(self):
+        """TTS 설정 파일의 전체 구조를 로드"""
+        try:
+            if os.path.exists(self.tts_config_path):
+                with open(self.tts_config_path, "r", encoding="utf-8") as f:
+                    return json.load(f) # .get() 쓰지 말고 전체 리턴
+            return {}
+        except Exception as e:
+            self.logger.error(f"TTS 설정 로드 실패: {e}")
+            return {}
 
     def process_voice_command(self):
-        """음성 인식을 시작하고 분석된 명령 시퀀스를 실행합니다."""
+        """음성 명령 처리 프로세스"""
+        # 1. 청취 및 인식
         audio = self.stt.listen()
         user_text = self.stt.transcribe(audio)
-
+        
         if not user_text:
-            print("   [STT] 소리가 들리지 않습니다...")
-            return {
-                "status": "no_input",
-                "message": "소리가 들리지 않습니다.",
-            }
-
+            msg = self.tts_msgs.get("stt_unclear", "잘 듣지 못했어요.")
+            self.speaker.speak(msg)
+            return
+            
+        # 2. 텍스트 명령 프로세스로 위임
         print(f"\n🎤 인식된 목소리: {user_text}")
-        return self.process_text_command(user_text, speak_response=True)
+        return self.process_text_command(user_text)
 
-    def process_text_command(self, user_text: str, speak_response: bool = True):
-        """텍스트 명령을 분석하고 실행합니다. type/voice 공용 처리."""
-        if not user_text or not str(user_text).strip():
-            return {
-                "status": "empty",
-                "message": "입력이 비어 있습니다.",
-            }
+    def process_text_command(self, user_text: str):
+        """텍스트 명령 분석 및 실행 (보안/해석/실행/TTS 통합)"""
+        if not user_text.strip(): return
 
-        user_text = str(user_text).strip()
-        print("🧠 AI 분석 중...", end="\r")
+        # --- [STEP 1: 보안 검사] ---
+        is_safe, keyword = self.security.is_safe(user_text)
+        if not is_safe:
+            msg = self.tts_msgs.get("deny_unsafe", "보안상 실행할 수 없는 명령입니다.")
+            self.logger.warning(f"🛑 보안 차단됨: {keyword}")
+            self.speaker.speak(msg)
+            return {"status": "denied", "message": msg}
+
+        # --- [STEP 2: 의도 분석] ---
         self.logger.info(f"의도 분석 시작: {user_text}")
-
-        # 1. Analyze
         intent_data = self.interpreter.analyze(user_text)
-        self.logger.debug(f"🤖 LLM 분석 결과: {json.dumps(intent_data, ensure_ascii=False)}")
+        
+        if not intent_data or not intent_data.get("commands"):
+            msg = self.tts_msgs.get("stt_unclear", "명령을 이해하지 못했어요.")
+            self.speaker.speak(msg)
+            return {"status": "fail", "message": "unknown_intent"}
 
-        if not intent_data:
-            print("⚠️ 분석 결과가 비어 있습니다.")
-            final_tts = "분석 결과가 비어 있습니다."
-            if speak_response:
-                self.logger.info(f"[BEFORE TTS] {final_tts}")
-                self.speaker.speak(final_tts)
-            return {
-                "status": "empty_intent",
-                "message": final_tts,
-            }
-
-        status = intent_data.get("status", "unknown")
-        message = intent_data.get("message", "")
         commands = intent_data.get("commands", [])
+        
+        # 새 창/새로 열기 의도 감지 (질문자님 기존 로직)
+        force_new_window = any(keyword in user_text for keyword in ["새로", "새 창", "새로운"])
+        if force_new_window:
+            self.logger.info("🆕 '새 창' 의도 감지됨")
 
-        print("✅ 분석 완료!            ")
-        print("-" * 30)
-        print(f"📄 분석 결과 (JSON):\n{json.dumps(intent_data, indent=2, ensure_ascii=False)}")
-        print("-" * 30)
+        # --- [STEP 3: 순차 실행 및 결과 수집] ---
+        spoken_responses = []
+        overall_success = True
 
-        # 2. 비실행 응답 처리
-        if status == "clarify":
-            final_tts = message or "질문을 다시 확인해주세요."
-            print(f"🗣 재질문: {final_tts}")
-            self.logger.info(f"Clarify response: {final_tts}")
-            if speak_response:
-                self.logger.info(f"[BEFORE TTS] {final_tts}")
-                self.speaker.speak(final_tts)
-            return {
-                "status": "clarify",
-                "message": final_tts,
-            }
-
-        if status == "denied":
-            final_tts = message or "이 요청은 수행할 수 없습니다."
-            print(f"🛑 요청 거절: {final_tts}")
-            self.logger.warning(f"Denied response: {final_tts}")
-            if speak_response:
-                self.logger.info(f"[BEFORE TTS] {final_tts}")
-                self.speaker.speak(final_tts)
-            return {
-                "status": "denied",
-                "message": final_tts,
-            }
-
-        # 3. 정상 분석이 아니면 종료
-        if status != "ok":
-            final_tts = message or "명령을 이해하지 못했어요."
-            print(f"⚠️ 알 수 없는 분석 상태: {status}")
-            self.logger.warning(f"Unknown intent status: {status}")
-            if speak_response:
-                self.logger.info(f"[BEFORE TTS] {final_tts}")
-                self.speaker.speak(final_tts)
-            return {
-                "status": "unknown",
-                "message": final_tts,
-            }
-
-        # 4. 실행할 명령이 없는 경우
-        if not commands:
-            final_tts = message or "처리할 수 있는 명령이 없습니다."
-            print(f"💬 {final_tts}")
-            self.logger.info("No commands to execute.")
-            if speak_response:
-                self.logger.info(f"[BEFORE TTS] {final_tts}")
-                self.speaker.speak(final_tts)
-            return {
-                "status": "no_commands",
-                "message": final_tts,
-            }
-
-        self.logger.info(f"총 {len(commands)}개의 명령 실행 시작")
-
-        spoken_messages = []
-        stopped_early = False
-        overall_status = "success"
-
-        # 5. commands 리스트 순차 실행
-        for idx, cmd in enumerate(commands, start=1):
+        for i, cmd in enumerate(commands):
             action = cmd.get("action")
             target = cmd.get("target")
             params = cmd.get("params", {})
 
-            if idx > 1:
-                prev_cmd = commands[idx - 2]
-                if prev_cmd.get("action") == "open":
-                    self.logger.info("⏳ 창이 뜨기를 기다립니다 (2초)...")
-                    time.sleep(2.0)
-                else:
-                    time.sleep(0.5)
+            # 새 창 의도 주입
+            if force_new_window:
+                params["force_new"] = True
 
-            self.logger.info(f"[{idx}/{len(commands)}] 명령 실행 중: {action} on {target}")
-            self.logger.info(f"📡 송신 데이터 확인 -> 액션: {action}, 데이터: {params}")
+            # 실행 전 딜레이 (명령 간 간격)
+            if i > 0:
+                delay = 2.0 if commands[i-1].get("action") == "open" else 0.5
+                time.sleep(delay)
 
-            # 핸들러 선택
-            if target and self.web_handler.is_mine(target):
-                self.logger.info(f"🌐 Web 핸들러에게 위임: {target} ({action})")
+            # 핸들러 배정 및 실행
+            if self.web_handler.is_mine(target):
+                self.logger.info(f"🌐 Web 위임: {target}")
                 result = self.web_handler.execute(action, target, params)
             else:
-                self.logger.info(f"💻 OS 핸들러에게 위임: {target} ({action})")
+                self.logger.info(f"💻 OS 위임: {target}")
                 result = self.os_handler.execute(action, target, params)
 
-            result_status = result.get("status")
-            result_message = result.get("message", "")
-            result_reason = result.get("reason", "unknown")
-            mode_str = f" [{result.get('mode')}]" if result.get("mode") else ""
-
-            if result_status == "success":
+            # 결과 처리
+            # --- [결과 처리 및 TTS 문장 생성] ---
+            if result.get("status") == "success":
+                mode_str = f" [{result.get('mode')}]" if result.get("mode") else ""
                 print(f"🚀 실행 성공: {target} -> {action}{mode_str}")
-                if result_message:
-                    print(f"   ↳ {result_message}")
-                    spoken_messages.append(result_message)
+                
+                # 1순위: 핸들러가 준 메시지
+                if result.get("message"):
+                    spoken_responses.append(result["message"])
+                
+                # 2순위: 템플릿 엔진 (더 안전한 버전)
+                elif action in self.tts_templates:
+                    msg = self.tts_templates[action]
+                    
+                    # 안전한 치환 데이터 준비
+                    # 템플릿에 {target}, {query} 등이 있으면 실제 값으로 교체합니다.
+                    msg = msg.replace("{target}", str(target))
+                    msg = msg.replace("{query}", str(params.get("query", "")))
+                    msg = msg.replace("{departure}", str(params.get("departure", "현재 위치")))
+                    msg = msg.replace("{destination}", str(params.get("destination", "")))
+                    msg = msg.replace("{text}", str(params.get("text", "")))
+                    
+                    spoken_responses.append(msg)
                 else:
-                    spoken_messages.append(f"{target} {action} 작업을 완료했어요.")
-
-            elif result_status == "denied":
-                print(f"🛑 실행 거절: {target} ({action})")
-                print(f"   ↳ {result_message or result_reason}")
-                self.logger.warning(f"Execution denied: {target} ({action}) - {result_reason}")
-                spoken_messages.append(result_message or "이 요청은 실행할 수 없어요.")
-                stopped_early = True
-                overall_status = "denied"
-                break
-
+                    # 템플릿이 아예 없는 경우
+                    spoken_responses.append(self.tts_msgs.get("action_done", "완료했습니다."))
             else:
-                print(f"⚠️ 실행 실패: {target} (사유: {result_reason})")
-                if result_message:
-                    print(f"   ↳ {result_message}")
-                    spoken_messages.append(result_message)
-                else:
-                    spoken_messages.append("요청한 작업을 수행하지 못했어요.")
+                overall_success = False
+                reason = result.get('reason', 'unknown')
+                print(f"⚠️ 실행 실패: {target} (사유: {reason})")
+                break # 하나라도 실패하면 체인 중단 (팀원의 Chaining 의도 반영)
 
-                self.logger.warning(f"Execution failed: {target} ({action}) - {result_reason}")
-                stopped_early = True
-                overall_status = "failed"
-                break
-
-            time.sleep(0.5)
-
-        # 6. 최종 TTS는 한 번만
-        if spoken_messages:
-            final_tts = " ".join(spoken_messages)
-        elif stopped_early:
-            final_tts = "요청한 작업을 끝까지 수행하지 못했어요."
+        # --- [STEP 4: 최종 TTS 통합 피드백] ---
+        if overall_success:
+            final_msg = " ".join(spoken_responses) if spoken_responses else self.tts_msgs.get("action_done", "완료했습니다.")
         else:
-            final_tts = "작업을 완료했어요."
-
-        if speak_response:
-            self.logger.info(f"[BEFORE TTS] {final_tts}")
-            time.sleep(0.5)
-            self.speaker.speak(final_tts)
-
-        return {
-            "status": overall_status,
-            "message": final_tts,
-            "stopped_early": stopped_early,
-            "spoken_messages": spoken_messages,
-            "intent_data": intent_data,
-        }
+            final_msg = self.tts_msgs.get("action_failed", "작업을 완료하지 못했어요.")
+        print(f"DEBUG: 최종 전달될 메시지: '{final_msg}'")
+        self.speaker.speak(final_msg)
+        return {"status": "done", "messages": spoken_responses}
 
     def shutdown(self):
-        try:
-            self.speaker.stop()
-            self.logger.info("Controller shutdown complete.")
-        except Exception as e:
-            self.logger.warning(f"Shutdown warning: {e}")
+        """시스템 종료 전 자원 정리"""
+        self.speaker.stop()
+        self.logger.info("시스템이 안전하게 종료되었습니다.")
+        

@@ -1,0 +1,10 @@
+{
+  "blocked_keywords": [
+    "system32", "regedit", "레지스트리", "포맷", "삭제해", "지워", 
+    "제거해", "taskkill", "shutdown", "재부팅", "방화벽 꺼", 
+    "백신 꺼", "비밀번호", "계정 삭제", "powershell", "cmd /c"
+  ],
+  "blocked_apps": [
+    "cmd.exe", "powershell.exe", "regedit.exe"
+  ]
+}

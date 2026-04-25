@@ -1,88 +1,44 @@
+# engine/speaker.py
+# 역할: 오직 텍스트를 음성으로 변환하는 기능만 수행.
+# TTS 로직은 브라우저(Web)나 OS 제어와 마찬가지로 일종의 **'출력 엔진'**입니다. 따라서 engine 디렉토리에 위치시키는 것이 가장 구조적으로 옳습니다.
+import pyttsx3
 import threading
-import queue
-import time
-import os
-from gtts import gTTS
-import pygame
-from utils.logger import get_logger
 
 class Speaker:
     def __init__(self):
-        self.logger = get_logger("Speaker")
-        self.enabled = True
-        self._queue = queue.Queue()
-        self._stop_event = threading.Event()
+        # 이제 __init__에서 엔진을 미리 만들지 않습니다.
+        pass
+
+    def speak(self, text):
+        if not text: return
         
-        # 임시 음성 파일 경로 (현재 폴더에 생성)
-        self.temp_file = "tts_output.mp3"
-        
-        # 1. pygame mixer 초기화
+        # 별도 스레드에서 돌리지 않고 직접 실행하되, 
+        # 매번 init -> say -> runAndWait -> stop 순으로 확실히 닫아줍니다.
         try:
-            pygame.mixer.init()
-        except Exception as e:
-            self.logger.error(f"Pygame mixer init error: {e}")
-
-        self._worker = threading.Thread(target=self._tts_worker, daemon=True)
-        self._worker.start()
-
-    def _tts_worker(self):
-        self.logger.info("gTTS + Pygame Worker thread started.")
-
-        while not self._stop_event.is_set():
-            try:
-                # 큐에서 텍스트 가져오기
-                try:
-                    text = self._queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-
-                if text is None:
+            print(f"🔊 [TTS 실행 중] {text}")
+            engine = pyttsx3.init()
+            
+            # 속도 및 볼륨 설정
+            engine.setProperty('rate', 185)
+            engine.setProperty('volume', 1.0)
+            
+            # 한국어 설정 (필요 시)
+            voices = engine.getProperty('voices')
+            for voice in voices:
+                if "Korean" in voice.name or "KO" in voice.id:
+                    engine.setProperty('voice', voice.id)
                     break
-
-                clean_text = str(text).strip()
-                if not clean_text:
-                    continue
-
-                self.logger.info(f"TTS speak start (gTTS): {clean_text}")
-
-                # 2. Google TTS로 음성 파일 생성 (.mp3)
-                tts = gTTS(text=clean_text, lang='ko')
-                tts.save(self.temp_file)
-
-                # 3. pygame으로 재생
-                pygame.mixer.music.load(self.temp_file)
-                pygame.mixer.music.play()
-
-                # 4. 재생이 끝날 때까지 대기 (가장 중요: 여기서 씹히는 걸 방지함)
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-
-                # 5. 다음 파일 덮어쓰기를 위해 unload
-                pygame.mixer.music.unload()
-                
-                # 가끔 파일 삭제 권한 문제가 생길 수 있으니 try로 감쌈
-                try:
-                    if os.path.exists(self.temp_file):
-                        os.remove(self.temp_file)
-                except:
-                    pass
-
-                self.logger.info("TTS speak done.")
-
-            except Exception as e:
-                self.logger.error(f"TTS worker error: {e}")
-                time.sleep(0.5)
-
-        self.logger.info("TTS Worker thread finished.")
-
-    def speak(self, text: str):
-        if not self.enabled or not text:
-            return
-        
-        # 큐에 텍스트 넣기
-        self._queue.put(str(text).strip())
-        self.logger.info(f"TTS queued: {text}")
+            
+            engine.say(text)
+            engine.runAndWait()
+            
+            # 💡 핵심: 사용 후 엔진 리소스를 확실히 해제
+            engine.stop()
+            del engine 
+            
+        except Exception as e:
+            print(f"❌ TTS 엔진 충돌: {e}")
 
     def stop(self):
-        self._stop_event.set()
-        self._queue.put(None)
+        # 일회용 방식에서는 특별히 할 일이 없지만 인터페이스 유지를 위해 둠
+        pass
