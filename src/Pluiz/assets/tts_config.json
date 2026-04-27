@@ -1,0 +1,22 @@
+{
+  "engine_settings": {
+    "rate": 185,
+    "volume": 1.0
+  },
+  
+  "action_templates": {
+    "open": "{target} 프로그램을 실행했습니다.",
+    "close": "{target} 프로그램을 종료했습니다.",
+    "web_search": "{target}에서 {query}를 검색한 결과입니다.",
+    "map_search": "{departure}에서 {destination}까지 가는 길을 찾았습니다.",
+    "input": "{target}에 내용을 입력했습니다."
+  },
+  "status_messages": {
+    "welcome": "반가워요! 플루이즈 시스템이 가동되었습니다.",
+    "action_done": "요청하신 작업을 완료했습니다.",
+    "action_failed": "죄송합니다. 작업을 수행하지 못했습니다.",
+    "deny_unsafe": "보안상 위험한 명령이라 실행할 수 없어요.",
+    "stt_unclear": "죄송해요. 잘 못 들었어요. 다시 말씀해 주세요."
+  }
+}
+

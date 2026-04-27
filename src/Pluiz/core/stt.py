@@ -14,7 +14,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 class STTEngine:
     def __init__(self):
         self.logger = get_logger("STTEngine")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # GPU 사양 때문에 테스트 할 때는 우선 CPU로 진행, GPU 쓰려면 아래 부분 주석 풀고 device="cpu" 주석처리
+        # device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cpu"
         self.logger.info(f"STT 엔진 초기화 시작 (Device: {device})")
         
         # 모델 로드

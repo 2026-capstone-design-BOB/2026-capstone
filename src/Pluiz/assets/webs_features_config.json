@@ -1,0 +1,15 @@
+{
+  "smart_map": {
+    "target_url": "https://map.naver.com/v5/directions/",
+    "selectors": {
+      "start_input": "div.direction_search_item.origin input.input_search",
+      "goal_input": "div.direction_search_item.destination input.input_search",
+      "search_button": "button.btn_direction",
+      "result_container": "div.direction_result"
+    },
+    "settings": {
+      "typing_speed": 0.1,
+      "wait_timeout": 10
+    }
+  }
+}
