@@ -1,4 +1,6 @@
 # main.py
+# # ----------------------voice 모드 ----------------------
+
 import sys
 import os
 from core.controller import PluizController
@@ -17,7 +19,7 @@ def main():
     try:
         # 컨트롤러 초기화
         pluiz = PluizController()
-        print("\n✨ Pluiz가 데모 모드로 깨어났습니다!")
+        print("\n✨ Pluiz가 깨어났습니다!")
         print("📢 별도의 입력 없이 바로 음성으로 명령하세요.")
         print("🛑 종료하려면 Ctrl+C를 누르거나 '종료해줘'라고 말씀하세요.\n")
         
@@ -31,7 +33,7 @@ def main():
     except KeyboardInterrupt:
         # Ctrl+C 종료 시 인사
         if 'pluiz' in locals():
-            pluiz.speaker.speak("데모를 종료합니다. 수고하셨습니다.")
+            pluiz.speaker.speak("종료합니다. 수고하셨습니다.")
         print("\n\n👋 Pluiz를 종료합니다. 수고하셨습니다!")
         sys.exit(0)
         
@@ -44,7 +46,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# # ---------------------- 개발용, type + voice 둘 다 가능 모드 ----------------------
+# # # ---------------------- 개발용, type + voice 둘 다 가능 모드 ----------------------
 
 # import sys
 # import os

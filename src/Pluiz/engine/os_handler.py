@@ -8,6 +8,7 @@ import pyautogui
 import pyperclip
 import win32gui
 import win32con
+import glob  # 최근 파일을 찾기 위해 추가
 from fuzzywuzzy import process
 from engine.base import BaseController
 from utils.logger import get_logger, trace_action # trace_action 추가
@@ -61,6 +62,7 @@ class OSHandler(BaseController):
     def execute(self, action: str, target: str, params: dict = None):
         # [수정] 실행 시점에 모든 인자를 한 줄로 요약해서 출력
         self.logger.info(f"🚀 [OS_START] 액션: {action} | 타겟: {target} | 데이터: {params}")
+        
         # 1. 앱 정보 매칭
         app_info, _ = self._get_best_match(target)
         if not app_info: return {"status": "fail", "reason": "not_found"}
@@ -70,27 +72,47 @@ class OSHandler(BaseController):
         params = params or {}
         current_hwnds = self._get_all_hwnds(actual_name)
 
-        # engine/os_handler.py 내 open 부분
-
         # --- [액션 1: OPEN] ---
         if action == "open":
-            # params에서 is_new가 있는지 확실히 체크
             is_new = params.get("is_new", False) or params.get("force_new", False)
             
-            # 새로 여는 것이 아니고 이미 창이 있다면
-            if not is_new and current_hwnds:
+            # 1. 엑셀 특수 처리: 바탕화면에서 가장 최근 .xlsx 파일을 찾아 실행
+            if actual_name == "엑셀":
+                try:
+                    # 바탕화면 경로 가져오기
+                    desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+                    # 모든 .xlsx 파일 리스트업
+                    excel_files = glob.glob(os.path.join(desktop_path, "*.xlsx"))
+                    
+                    if excel_files:
+                        # 가장 최근에 수정된 파일 선택
+                        latest_file = max(excel_files, key=os.path.getmtime)
+                        self.logger.info(f"📂 바탕화면의 최신 엑셀 파일 실행: {latest_file}")
+                        
+                        # 파일명을 인자로 넣어 실행 (이게 핵심입니다!)
+                        subprocess.Popen(f'start "" "{latest_file}"', shell=True)
+                        
+                        # 창이 뜰 때까지 대기 및 핸들 확보
+                        time.sleep(2.0) 
+                        return {"status": "success", "mode": "launch_file", "file": latest_file}
+                except Exception as e:
+                    self.logger.error(f"엑셀 파일 찾기 중 에러: {e}")
+                
+                # 만약 파일 찾기에 실패하면 아래의 일반 실행 로직으로 넘어갑니다.
+
+            # 2. 일반 앱 실행 로직 (메모장, 그림판 등 또는 엑셀 파일 못 찾았을 때)
+            if not is_new and current_hwnds and actual_name != "엑셀":
                 self.last_used_hwnd = current_hwnds[-1]
                 self._force_focus(self.last_used_hwnd)
                 return {"status": "success", "mode": "focus", "hwnd": self.last_used_hwnd}
             
-            # --- 여기서부터 신규 실행 로직 ---
+            # 신규 실행
             old_hwnds = current_hwnds
             subprocess.Popen(f"start {path}", shell=True)
             
             new_hwnd = None
             for _ in range(10):
                 time.sleep(0.5)
-                # 제가 제안한 고속 검색 함수(_get_fast_hwnd)가 있다면 그걸 쓰시는 게 좋습니다.
                 updated_hwnds = self._get_all_hwnds(actual_name) 
                 diff = [h for h in updated_hwnds if h not in old_hwnds]
                 if diff:
@@ -99,34 +121,34 @@ class OSHandler(BaseController):
             
             self.last_used_hwnd = new_hwnd or (updated_hwnds[-1] if updated_hwnds else None)
             return {"status": "success", "mode": "launch", "hwnd": self.last_used_hwnd}
+
         # --- [액션 2: INPUT] ---
         elif action == "input":
             input_text = params.get('text', '')
             self.logger.info(f"🚀 [OS_START] 액션: input | 타겟: {actual_name} | 텍스트: '{input_text}'")
 
-            # [1단계] 타겟 창 핸들 확보 (없으면 찾을 때까지 잠시 대기)
+            # [1단계] 타겟 창 핸들 확보
             target_hwnd = self.last_used_hwnd
             if not target_hwnd or not win32gui.IsWindow(target_hwnd):
-                for _ in range(5):  # 최대 2.5초간 창 찾기 시도
-                    target_hwnd = self._get_fast_hwnd(actual_name)
-                    if target_hwnd: break
+                for _ in range(5):  
+                    hwnds = self._get_all_hwnds(actual_name)
+                    if hwnds: 
+                        target_hwnd = hwnds[-1]
+                        break
                     time.sleep(0.5)
                 self.last_used_hwnd = target_hwnd
 
             if target_hwnd:
-                # [2단계] 창을 최상단으로 올리고 '입력 가능 상태'가 될 때까지 대기
+                # [2단계] 창 포커싱
                 self._force_focus(target_hwnd)
-                
-                # 핵심: 창이 활성화되어 포커스를 완전히 잡을 때까지의 물리적 시간 확보
-                # 로그상 0.04초만에 실행되는 것을 방지하기 위해 강제로 0.8초~1초 대기
                 time.sleep(1.0) 
 
-                # [3단계] 클립보드 작업 (데이터 오염 방지)
+                # [3단계] 클립보드 작업
                 pyperclip.copy('') 
                 pyperclip.copy(input_text)
-                time.sleep(0.2) # 클립보드 데이터 안착 시간
+                time.sleep(0.2) 
 
-                # [4단계] 입력 실행 (이미 활성화된 창에 안전하게 붙여넣기)
+                # [4단계] 입력 실행
                 pyautogui.keyDown('ctrl')
                 pyautogui.press('v')
                 time.sleep(0.1)
@@ -139,6 +161,7 @@ class OSHandler(BaseController):
                 return {"status": "success"}
             
             return {"status": "fail", "reason": "window_not_found"}
+
         # --- [액션 3: 창 제어 (최대/최소/복원)] ---
         elif action in ["maximize", "minimize", "restore"]:
             target_hwnd = self.last_used_hwnd if self.last_used_hwnd and win32gui.IsWindow(self.last_used_hwnd) else (current_hwnds[-1] if current_hwnds else None)

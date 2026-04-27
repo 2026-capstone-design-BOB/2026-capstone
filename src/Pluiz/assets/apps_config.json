@@ -19,7 +19,11 @@
       "name": "브라우저",
       "path": "chrome.exe",
       "aliases": ["크롬", "인터넷", "구글"]
+    },
+    {
+      "name": "엑셀",
+      "path": "excel.exe",
+      "aliases": ["일정표", "스프레드시트", "excel", "엑셀"]
     }
   ]
 }
-
